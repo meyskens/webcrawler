@@ -1,7 +1,7 @@
-A simple (not concurrent) web crawler
+A simple (~~not~~ now concurrent) web crawler
 =====================================
 
-*This code is made for my coding challenge when applying for an internship at GoCardless*
+*This code is made for my coding challenge when applying for an internship at GoCardless, later made concurrent*
 
 ## Dependencies
 This app is written in Go and isn't compiles so you need to have Go installed. You can get it at https://golang.org/dl/

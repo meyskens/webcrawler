@@ -7,19 +7,29 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 
 	"golang.org/x/net/html"
 )
 
 var (
-	mainURL          string
-	urlsAdded        = map[string]bool{}
-	urlsToScan       = []string{}
-	urlInfos         = []urlInfo{}
+	mainURL string
+
+	urlsAdded      = map[string]bool{}
+	urlsAddedMutex = &sync.Mutex{}
+
+	urlsToScan      = []string{}
+	urlsToScanMutex = &sync.Mutex{}
+
+	urlInfos      = []urlInfo{}
+	urlInfosMutex = &sync.Mutex{}
+
 	schemeRegex      = regexp.MustCompile(`^https*://`)
 	urlFragmentRegex = regexp.MustCompile(`\#.*$`)                         // to filter out #fragments
 	nonHTTPLinkRegex = regexp.MustCompile(`^(mailto|tel|sms|javascript):`) // most common ones
 )
+
+const threadLimit = 10
 
 // urlInfo contains the data that needs to returned per crawled url
 type urlInfo struct {
@@ -42,17 +52,39 @@ func main() {
 
 	addURLToScan(mainURL)
 
-	for len(urlsToScan) > 0 {
-		url := urlsToScan[0]
-		crawlURL(url)
-		urlsToScan = urlsToScan[1:]
+	doneChan := make(chan bool)
+	numWorkers := 0
+
+	urlsToScanMutex.Lock()
+	go crawlURL(urlsToScan[0], doneChan)
+	numWorkers++
+	urlsToScan = urlsToScan[1:]
+	urlsToScanMutex.Unlock()
+
+M:
+	for {
+		select {
+		case <-doneChan:
+			numWorkers--
+			if len(urlsToScan) == 0 && numWorkers == 0 {
+				break M
+			}
+			for len(urlsToScan) > 0 && numWorkers <= threadLimit {
+				urlsToScanMutex.Lock()
+				go crawlURL(urlsToScan[0], doneChan)
+				numWorkers++
+				urlsToScan = urlsToScan[1:]
+				urlsToScanMutex.Unlock()
+			}
+		}
 	}
+
 	jsonOutput, _ := json.MarshalIndent(urlInfos, "", "  ") // tabs vs spaces RIGHT HERE
 	fmt.Println(string(jsonOutput))
 }
 
 // crawlURL craws a url and does the necessary actions
-func crawlURL(url string) {
+func crawlURL(url string, done chan bool) {
 	assets := []string{}
 
 	resp, err := http.Get(url)
@@ -90,7 +122,11 @@ L:
 		URL:    url,
 		Assets: assets,
 	}
+	urlInfosMutex.Lock()
 	urlInfos = append(urlInfos, info)
+	urlInfosMutex.Unlock()
+
+	done <- true
 }
 
 // scanLink looks at an anchor to list any URLs needed to be scanned
@@ -121,10 +157,14 @@ func addURLToScan(url string) {
 	cleanURL := strings.Trim(url, "/")                    // remove trailing /
 	cleanURL = schemeRegex.ReplaceAllString(cleanURL, "") // remove scheme
 
+	urlsAddedMutex.Lock()
 	if _, exists := urlsAdded[cleanURL]; !exists {
+		urlsToScanMutex.Lock()
 		urlsToScan = append(urlsToScan, url)
+		urlsToScanMutex.Unlock()
 		urlsAdded[cleanURL] = true
 	}
+	urlsAddedMutex.Unlock()
 }
 
 // scanForAsset scans elements for resources that are loaded
